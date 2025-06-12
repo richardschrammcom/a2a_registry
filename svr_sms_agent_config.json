@@ -1,0 +1,5 @@
+{
+  "reg_url": "http://localhost:6060/tasks/send",
+  "api_key": "demo_api_key-SMS",
+  "agent_id": ""
+}

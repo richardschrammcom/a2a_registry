@@ -1,0 +1,91 @@
+{
+  "383445c2-7d90-48fc-99cb-38b1819cebe8": {
+    "name": "EmailAgent",
+    "description": "An email agent that uses the Google MCP server to send_email .",
+    "url": "http://localhost:6001",
+    "version": "0.1.0",
+    "provider": {
+      "organization": "Fairwind Technologies, LLC.",
+      "url": "https://www.fairwindtechnologies.com"
+    },
+    "capabilities": {
+      "streaming": false,
+      "pushNotifications": false,
+      "stateTransitionHistory": false
+    },
+    "defaultInputModes": [
+      "application/json",
+      "text/plain"
+    ],
+    "defaultOutputModes": [
+      "application/json",
+      "text/plain"
+    ],
+    "skills": [
+      {
+        "id": "send_email",
+        "name": "Send Email",
+        "description": "Send an email to one or more recipients using the Google gsuite MCP server. Requires the To address, a subject line, and the message body.",
+        "tags": [
+          "send",
+          "email"
+        ],
+        "examples": [
+          "Send an email to test@test.com with a subject line of 'Touch Base' and a body of 'Hi Test! Just reaching out to say Hi!' "
+        ],
+        "inputModes": [
+          "application/json",
+          "text/plain"
+        ],
+        "outputModes": [
+          "application/json",
+          "text/plain"
+        ]
+      }
+    ]
+  },
+  "55f7e37c-7c0b-413a-a15f-42ee1d2dbe18": {
+    "name": "ChatAgent",
+    "description": "A chat agent that takes input request from the user and dynamically enlists other agents to assist.",
+    "url": "http://localhost:6002",
+    "version": "0.1",
+    "capabilities": {
+      "streaming": false,
+      "pushNotifications": false
+    },
+    "skills": [
+      {
+        "id": "query_registry",
+        "name": "Query Register Agent",
+        "description": "Queries the registry to create find agents it needs.",
+        "tags": [
+          "register",
+          "registry",
+          "agent"
+        ],
+        "inputModes": [
+          "application/json",
+          "text/plain"
+        ],
+        "outputModes": [
+          "application/json"
+        ]
+      },
+      {
+        "id": "call_remote_agent",
+        "name": "Call Agent",
+        "description": "Calls another agent.",
+        "tags": [
+          "agent"
+        ],
+        "inputModes": [
+          "application/json",
+          "text/plain"
+        ],
+        "outputModes": [
+          "application/json"
+        ]
+      }
+    ]
+  }
+}
