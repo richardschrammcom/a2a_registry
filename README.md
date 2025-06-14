@@ -9,6 +9,7 @@ A multi-agent system implementing Google's Agent-to-Agent (A2A) protocol with a 
   - [Registry Agent (Port 6060)](#registry-agent-port-6060)
   - [Email Agent (Port 6001)](#email-agent-port-6001)
   - [Chat Agent (Port 6002)](#chat-agent-port-6002)
+  - [SMS Agent (Port 6003)](#sms-agent-port-6003)
 - [Requirements](#requirements)
   - [System Requirements](#system-requirements)
   - [Python Dependencies](#python-dependencies)
@@ -49,6 +50,7 @@ This project implements a distributed agent registry system where:
 - **Registry Agent** (`svr_registry_agent.py`) - Acts as a central registry that stores agent cards and provides semantic search functionality
 - **Chat Agent** (`svr_chat_agent.py`) - A client agent that can dynamically enlist other agents to fulfill user requests
 - **Email Agent** (`svr_email_agent.py`) - A specialized agent that sends emails using Google's MCP server
+- **SMS Agent** (`svr_sms_agent.py`) - A specialized agent that sends SMS text messages using a third-party SMS service
 - **Command Line Client** (`chat_client.py`) - Interactive client for testing the chat agent
 
 The system allows agents to register themselves at startup, discover other agents through semantic search, and coordinate to fulfill complex user requests that require multiple capabilities.
@@ -75,6 +77,12 @@ Note: This is currently a proof-of-concept project, not a production ready solut
 - Searches the registry to find agents with needed capabilities
 - Coordinates with multiple agents to complete complex tasks
 - Maintains conversation sessions with users
+
+### SMS Agent (Port 6003)
+- Specialized agent for sending SMS text messages via third-party SMS service
+- Parses unstructured user requests to extract phone numbers and message content
+- Handles various phone number formats including E.164 format with country codes
+- Requires SMS service URL and API key configuration in environment variables
 
 ## Requirements
 
@@ -122,6 +130,10 @@ ANTHROPIC_API_KEY=your_anthropic_api_key
 # Google MCP Server Path (for email functionality)
 MCP_GSUITE_PATH=/path/to/gsuite-mcp/
 MCP_GSUITE_RUN_FILE=build/index.js
+
+# SMS Service Configuration (for SMS functionality)
+SMS_URL=https://your-sms-service.com/api/send
+SMS_KEY=your_sms_api_key
 
 # Logging Level
 LOG_LEVEL=DEBUG
@@ -178,7 +190,7 @@ Each agent has a config file with registry connection details:
 
 ### Starting the Agents
 
-Use the provided startup script to launch all agents:
+Use the provided startup script to launch all core agents:
 ```bash
 chmod +x startup.sh
 ./startup.sh
@@ -188,6 +200,19 @@ This will start:
 1. Registry Agent on port 6060
 2. Email Agent on port 6001  
 3. Chat Agent on port 6002
+
+**SMS Agent Demonstration Setup:**
+For demonstration purposes, the SMS Agent can be started separately to show agent failure/recovery:
+```bash
+chmod +x startup_sms.sh
+./startup_sms.sh
+```
+
+This starts only the SMS Agent on port 6003. The separate startup script allows you to:
+1. Start the core agents without SMS capability
+2. Test Chat Agent SMS requests (which will fail)
+3. Start the SMS Agent separately
+4. Retry SMS requests (which will now succeed)
 
 ### Manual Startup
 You can also start agents individually:
@@ -201,6 +226,9 @@ uvicorn svr_email_agent:app --host 0.0.0.0 --port 6001
 
 # Chat Agent
 uvicorn svr_chat_agent:app --host 0.0.0.0 --port 6002
+
+# SMS Agent
+uvicorn svr_sms_agent:app --host 0.0.0.0 --port 6003
 ```
 
 ### Using the Command Line Client
@@ -213,6 +241,7 @@ python chat_client.py
 Example interactions:
 ```
 Enter a query: Send an email to john@example.com saying hello
+Enter a query: Send an SMS to 555-123-4567 saying "Meeting at 3pm"
 Enter a query: What agents are available in the registry?
 Enter a query: exit
 ```
@@ -255,6 +284,15 @@ chmod +x list_agent_cards.sh
 - `GET /.well-known/agent.json` - Agent card
 - `POST /tasks/send` - Send email requests
 
+### SMS Agent (`localhost:6003`)
+- `GET /.well-known/agent.json` - Agent card
+- `POST /tasks/send` - Send SMS text message requests
+
+**Tools:**
+- `send_sms` - Send SMS to phone number with message content
+- `query_registry` - Search for other agents in the registry
+- `call_remote_agent` - Call other agents using A2A protocol
+
 ## Security
 
 - **API Key Authentication**: Registry operations require valid API keys
@@ -269,6 +307,7 @@ TRUSTED_AGENTS = {
     "demo_api_key1": "EmailServerAgent",
     "demo_api_key2": "FetchServerAgent", 
     "demo_api_key3": "ChatServerAgent",
+    "demo_api_key4": "SMSServerAgent",
     "abcd1234": "GeospatialRoutingAgent",
     "regadmin42": "RegistryAdminAgent"
 }
@@ -330,6 +369,49 @@ Chat Agent → Email Agent: {to: "test@example.com", subject: "Meeting", body: "
 Email Agent → User: "Email sent successfully"
 ```
 
+### 4. SMS Demonstration Workflow
+This workflow demonstrates the agent failure/recovery pattern:
+
+**Step 1: Clean slate - ensure SMS Agent is not in registry**
+```bash
+./shutdown.sh  # Stop all agents to ensure clean state
+./startup.sh   # Starts Registry, Email, and Chat agents only
+```
+
+**Important:** If the SMS Agent was previously registered, you may need to remove it from the registry first. The registry maintains agent registrations in memory, so restarting with `./shutdown.sh` followed by `./startup.sh` ensures a clean state where the SMS Agent is not registered.
+
+**Step 2: Test SMS request (will fail)**
+```bash
+python chat_client.py
+# Enter: "Send SMS to 555-123-4567 saying 'Hello from the agent system'"
+# Result: Chat Agent will search registry and report no SMS-capable agents found
+```
+
+**Step 3: Start SMS Agent (will auto-register)**
+```bash
+./startup_sms.sh  # Starts SMS Agent on port 6003
+# SMS Agent automatically registers itself with the Registry upon startup
+```
+
+**Step 4: Retry SMS request (will succeed)**
+```bash
+python chat_client.py
+# Enter: "Send SMS to 555-123-4567 saying 'Hello from the agent system'"
+# Result: Chat Agent now finds SMS Agent in registry and successfully sends message
+```
+
+This demonstrates the dynamic nature of the agent system - agents can come online at any time and immediately become available to other agents through the registry.
+
+**SMS Request Flow:**
+```
+User: "Send SMS to +1-555-123-4567 saying 'Meeting reminder'"
+Chat Agent → Registry Agent: "find agent that can send SMS"
+Registry Agent → Chat Agent: [SMSAgent card with confidence score]
+Chat Agent → SMS Agent: {phone: "+1-555-123-4567", message: "Meeting reminder"}
+SMS Agent → Third-party SMS Service: API call with phone and message
+SMS Agent → User: "SMS sent successfully"
+```
+
 ## Troubleshooting
 
 ### Common Issues
@@ -343,6 +425,12 @@ Email Agent → User: "Email sent successfully"
 - Check `credentials.json` and `token.json` files exist
 - Verify refresh token hasn't expired (7-day limit)
 - Check `MCP_GSUITE_PATH` environment variable
+
+**SMS Agent fails:**
+- Check SMS service URL and API key in `.env` file
+- Verify `SMS_URL` and `SMS_KEY` environment variables are set
+- Ensure SMS service is accessible and API key is valid
+- Check phone number format (accepts E.164 format with + prefix)
 
 **Agents can't communicate:**
 - Verify all agents are running on correct ports
