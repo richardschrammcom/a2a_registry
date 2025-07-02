@@ -52,13 +52,13 @@ if check_server_ready "0.0.0.0" "6060"; then
     echo "Server is up, starting next server..."
 fi
 
-echo "Starting EMAIL (svr_email_agent) (FastAPI/uvicorn) on port 6001... "
-uvicorn svr_email_agent:app --host 0.0.0.0 --port 6001 > email_agent.log 2>&1 &
-echo $! > email_agent.pid
+#echo "Starting EMAIL (svr_email_agent) (FastAPI/uvicorn) on port 6001... "
+#uvicorn svr_email_agent:app --host 0.0.0.0 --port 6001 > email_agent.log 2>&1 &
+#echo $! > email_agent.pid
 
-if check_server_ready "0.0.0.0" "6001"; then
-    echo "Server is up, starting next server..."
-fi
+#if check_server_ready "0.0.0.0" "6001"; then
+#    echo "Server is up, starting next server..."
+#fi
 
 echo "Starting CHAT (svr_chat_agent) agent (FastAPI/uvicorn) on port 6002"
 uvicorn svr_chat_agent:app --host 0.0.0.0 --port 6002 > chat_agent.log 2>&1 &
@@ -66,6 +66,14 @@ echo $! > chat_agent.pid
 
 if check_server_ready "0.0.0.0" "6002"; then
     echo "All agents started successfully."
+fi
+
+echo "Starting SMS (svr_sms_agent) agent (FastAPI/uvicorn) on port 6003..."
+uvicorn svr_sms_agent:app --host 0.0.0.0 --port 6003 > sms_agent.log 2>&1 &
+echo $! > sms_agent.pid
+
+if check_server_ready "0.0.0.0" "6003"; then
+    echo "Server is up!"
 fi
 
 # Now show the processes.

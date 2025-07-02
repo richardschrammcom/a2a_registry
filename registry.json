@@ -87,5 +87,64 @@
         ]
       }
     ]
+  },
+  "648243b1-399d-4ac6-b4a7-1e0bcac73029": {
+    "name": "SMSAgent",
+    "description": "A SMS agent that takes a phone number and message content and uses it's send_sms skill to send SMS text messages to the phone number.",
+    "url": "http://localhost:6003",
+    "version": "0.1",
+    "capabilities": {
+      "streaming": false,
+      "pushNotifications": false
+    },
+    "skills": [
+      {
+        "id": "query_registry",
+        "name": "Query Register Agent",
+        "description": "Queries the registry to create find agents it needs.",
+        "tags": [
+          "register",
+          "registry",
+          "agent"
+        ],
+        "inputModes": [
+          "application/json",
+          "text/plain"
+        ],
+        "outputModes": [
+          "application/json"
+        ]
+      },
+      {
+        "id": "call_remote_agent",
+        "name": "Call Agent",
+        "description": "Calls another agent.",
+        "tags": [
+          "agent"
+        ],
+        "inputModes": [
+          "application/json",
+          "text/plain"
+        ],
+        "outputModes": [
+          "application/json"
+        ]
+      },
+      {
+        "id": "send_sms",
+        "name": "Send SMS",
+        "description": "Receives a message and phone number and Sends an SMS text to provided phone number with the provided content.",
+        "tags": [
+          "agent"
+        ],
+        "inputModes": [
+          "application/json",
+          "text/plain"
+        ],
+        "outputModes": [
+          "application/json"
+        ]
+      }
+    ]
   }
 }
