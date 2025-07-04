@@ -7,8 +7,10 @@ import uuid
 import requests
 
 # Google Agent Imports
-from google.adk.agents import Agent
+from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm 
+from google.adk.agents.callback_context import CallbackContext
+from google.adk.models import LlmResponse, LlmRequest
 from google.adk.sessions import InMemorySessionService
 from google.adk.runners import Runner
 from google.genai import types 
@@ -47,10 +49,11 @@ sms_key = os.getenv("SMS_KEY")
 # --- Define Model Constants for easier use ---
 # Note: Specific model names might change. Refer to LiteLLM/Provider documentation.
 MODEL_GPT_4O = "openai/gpt-4o"
+MODEL_GPT_41 = "openai/gpt-4.1-mini"
 MODEL_CLAUDE_SONNET = "anthropic/claude-3-sonnet-20240229"
 
 # Set the active model here once so it can be switched out on just this line.
-ACTIVE_MODEL = MODEL_GPT_4O
+ACTIVE_MODEL = MODEL_GPT_41
 
 # Define the Fetch Agent
 # Use one of the model constants defined earlier
@@ -205,6 +208,21 @@ async def handle_task(
     logger.debug(f"Returning the response: {response_task}")
     return JSONResponse(response_task)
 # -------------------------------------------------------------------
+# Functions
+# -------------------------------------------------------------------
+def before_agent_cb(callback_context: CallbackContext) -> Optional[types.Content]:
+    logger.info(f"BEFORE_AGENT_CALLBACK FOR: {callback_context.agent_name}")
+
+def after_agent_cb(callback_context: CallbackContext) -> Optional[types.Content]:
+    logger.info(f"AFTER_AGENT_CALLBACK FOR: {callback_context.agent_name}")
+
+def before_model_cb(callback_context: CallbackContext, llm_request: LlmRequest) -> Optional[LlmResponse]:
+    logger.info(f"BEFORE_MODEL_CALLBACK FOR: {callback_context.agent_name}")
+    logger.info(f"Request contents: {llm_request.contents}")
+
+def after_model_cb(callback_context: CallbackContext, llm_response: LlmResponse) -> Optional[LlmResponse]:
+    logger.info(f"AFTER_MODEL_CALLBACK FOR: {callback_context.agent_name}")
+
 async def get_session(user_id: str, session_id: str):
     try:
         logger.debug("Getting Request Session.")
@@ -589,13 +607,17 @@ async def create_agent():
         - THINK DEEPLY - SPEED TO REPLY IS NOT AS IMPORTANT AS CORRECT RESPONSE.
 
         """
-        sms_agent = Agent(
+        sms_agent = LlmAgent(
             name="sms_agent",
             # Key change: Wrap the LiteLLM model identifier
             model=LiteLlm(model=ACTIVE_MODEL),
             description="An agent that satisfies user SMS requests, and dynamically enlists other agents on the network to assist as needed.",
             instruction=agent_prompt,
             tools=tools,
+            before_agent_callback=before_agent_cb,
+            after_agent_callback=after_agent_cb,
+            before_model_callback=before_model_cb,
+            after_model_callback=after_model_cb
         )
         logger.debug(f"Agent '{sms_agent.name}' created using model '{ACTIVE_MODEL}'.")
 

@@ -2,6 +2,7 @@
 
 import uuid
 import os
+import time
 import tempfile
 import shutil
 import re
@@ -11,14 +12,16 @@ import json
 from typing import Optional, List
 from pydantic import BaseModel
 
+import orjson
+
 # Google Agent Imports
-from google.adk.agents import Agent
+from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm 
+from google.adk.agents.callback_context import CallbackContext
+from google.adk.models import LlmResponse, LlmRequest
 from google.adk.sessions import InMemorySessionService
 from google.adk.runners import Runner
 from google.genai import types 
-from google.adk.tools import agent_tool
-#from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset, StdioServerParameters
 
 # Imports for being an Agent Host
 from fastapi import FastAPI, Request, Header, HTTPException, Body
@@ -59,6 +62,7 @@ async def lifespan(app: FastAPI):
     # be replaced with persisting in a redis cache or
     # a persistence layer.
     # TODO: Replace me in production!
+    logger.debug("Loading registry from filesystem.")
     global AGENT_REGISTRY
     AGENT_REGISTRY.clear()
     AGENT_REGISTRY.update(load_registry())
@@ -90,125 +94,160 @@ TRUSTED_AGENTS = {
 
 APP_NAME = "registry_agent"
 
+# initial_agent_instructions = """
+# You are a semantic router for agent cards stored in a Python dictionary called `AGENT_REGISTRY`.
+
+# You have a tool called get_minified_agent_cards which takes no parameters and returns the python dictionary to you to analyze.
+
+# Each key in the dictionary is a unique agent ID or alias. Each value is a dictionary with metadata about that agent, including:
+# - `name`: the human-readable name of the agent
+# - `description`: a summary of what the agent does
+# - `skills`: a list of skill dictionaries, each with its own `name` and `description`
+
+# Your task is to:
+# 1. Use your "get_minified_agent_cards" tool to retrieve a list of registered agents for you analyze against the user query. 
+# 2. Compare a user's query to the key, `name`, and `description` fields of each agent card.
+# 3. Also consider each skill's `name`, `description`, and `example` fields.
+# 4. Score each agent card from 0 to 100 based on how well it matches the request, with 100 representing a perfect match.
+# 5. Format a payload in your response as a JSON array of objects, ordered by score (highest first)
+# 6. You may add additional information in the response in addition to the payload, such as your reasoning, etc. However, the response
+# must ALWAYS contain a JSON payload, because that payload will be used by other agents to identify trusted agents. The non-payload text
+# in the response will not be sent to the caller, only the JSON payload, as described below.
+
+# JSON payload format - a JSON array where each object contains exactly these 4 fields:
+# {
+#   "name": "Agent Name from the card",
+#   "confidence_score": 85,
+#   "explanation": "Brief explanation of why this score was assigned and how the agent matches the query",
+#   "agent_card": {entire agent card object exactly as stored in registry}
+# }
+
+# Payload Requirements:
+# - Order results by confidence_score (highest first) 
+# - Explanation should be 1-2 sentences explaining the match reasoning
+# - Agent_card must be the complete, unmodified card from the registry
+# - You MUST return all the cards in the registry in the results, even if all of them have a score of 0.
+# - You MUST NOT ADD ANYTHING ADDITIONAL TO THE PAYLOAD FORMAT LISTED BELOW.
+# - You MUST WRAP THE PAYLOAD WITH three backticks, then the string 'json' then the payload, then 3 more backticks.
+# - You MUST NOT DEVIATE FROM THE PAYLOAD FORMAT LISTED BELOW. Code is expecting to see this explicit format in order to parse the
+#   payload from your response.
+
+# Example payload response:
+# ```json
+# [
+#   {
+#     "name": "GeoSpatial Route Planner Agent",
+#     "confidence_score": 92,
+#     "explanation": "Perfect match for routing requests with traffic-aware optimization and custom mapping capabilities.",
+#     "agent_card": {complete agent card object}
+#   },
+#   {
+#     "name": "Weather Agent", 
+#     "confidence_score": 67,
+#     "explanation": "Partially relevant for location-based queries but focuses on weather rather than routing.",
+#     "agent_card": {complete agent card object}
+#   }
+# ]
+# ```
+
+# Below is an example of a card that could be in the AGENT_REGISTRY:
+# {
+#   "name": "GeoSpatial Route Planner Agent",
+#   "description": "Provides advanced route planning, traffic analysis, and custom map generation services. This agent can calculate optimal routes, estimate travel times considering real-time traffic, and create personalized maps with points of interest.",
+#   "url": "https://georoute-agent.example.com/a2a/v1",
+#   "provider": {
+#     "organization": "Example Geo Services Inc.",
+#     "url": "https://www.examplegeoservices.com"
+#   },
+#   "version": "1.2.0",
+#   "documentationUrl": "https://docs.examplegeoservices.com/georoute-agent/api",
+#   "capabilities": {
+#     "streaming": True,
+#     "pushNotifications": True,
+#     "stateTransitionHistory": False
+#   },
+#   "authentication": {
+#     "schemes": ["OAuth2"],
+#     "credentials": "{\"authorizationUrl\": \"https://auth.examplegeoservices.com/authorize\", \"tokenUrl\": \"https://auth.examplegeoservices.com/token\", \"scopes\": {\"route:plan\": \"Allows planning new routes.\", \"map:custom\": \"Allows creating and managing custom maps.\"}}"
+#   },
+#   "defaultInputModes": ["application/json", "text/plain"],
+#   "defaultOutputModes": ["application/json", "image/png"],
+#   "skills": [
+#     {
+#       "id": "route-optimizer-traffic",
+#       "name": "Traffic-Aware Route Optimizer",
+#       "description": "Calculates the optimal driving route between two or more locations, taking into account real-time traffic conditions, road closures, and user preferences (e.g., avoid tolls, prefer highways).",
+#       "tags": ["maps", "routing", "navigation", "directions", "traffic"],
+#       "examples": [
+#         "Plan a route from '1600 Amphitheatre Parkway, Mountain View, CA' to 'San Francisco International Airport' avoiding tolls.",
+#         "{\"origin\": {\"lat\": 37.422, \"lng\": -122.084}, \"destination\": {\"lat\": 37.7749, \"lng\": -122.4194}, \"preferences\": [\"avoid_ferries\"]}"
+#       ],
+#       "inputModes": ["application/json", "text/plain"],
+#       "outputModes": [
+#         "application/json",
+#         "application/vnd.geo+json",
+#         "text/html"
+#       ]
+#     },
+#     {
+#       "id": "custom-map-generator",
+#       "name": "Personalized Map Generator",
+#       "description": "Creates custom map images or interactive map views based on user-defined points of interest, routes, and style preferences. Can overlay data layers.",
+#       "tags": ["maps", "customization", "visualization", "cartography"],
+#       "examples": [
+#         "Generate a map of my upcoming road trip with all planned stops highlighted.",
+#         "Show me a map visualizing all coffee shops within a 1-mile radius of my current location."
+#       ],
+#       "inputModes": ["application/json"],
+#       "outputModes": [
+#         "image/png",
+#         "image/jpeg",
+#         "application/json",
+#         "text/html"
+#       ]
+#     }
+#   ]
+# }
+# """
 initial_agent_instructions = """
-You are a semantic router for agent cards stored in a Python dictionary called `AGENT_REGISTRY`.
+You are a semantic router for agents stored in a Python dictionary called `AGENT_REGISTRY`.
 
-You have a tool called list_agent_cards which takes no parameters and returns the python dictionary to you to analyze.
-
-Each key in the dictionary is a unique agent ID or alias. Each value is a dictionary with metadata about that agent, including:
-- `name`: the human-readable name of the agent
-- `description`: a summary of what the agent does
-- `skills`: a list of skill dictionaries, each with its own `name` and `description`
+You have access to a tool called `get_minified_agent_cards`, which retrieves the registry. Each agent card includes:
+- `name`: the agent’s name
+- `description`: what the agent does
+- `skills`: list of skills with `name`, `description`, and optional `examples`
 
 Your task is to:
-1. Use your "list_agent_cards" tool to retrieve a list of registered agents for you analyze against the user query. 
-2. Compare a user's query to the key, `name`, and `description` fields of each agent card.
-3. Also consider each skill's `name`, `description`, and `example` fields.
-4. Score each agent card from 0 to 100 based on how well it matches the request, with 100 representing a perfect match.
-5. Format a payload in your response as a JSON array of objects, ordered by score (highest first)
-6. You may add additional information in the response in addition to the payload, such as your reasoning, etc. However, the response
-must ALWAYS contain a JSON payload, because that payload will be used by other agents to identify trusted agents. The non-payload text
-in the response will not be sent to the caller, only the JSON payload, as described below.
-
-JSON payload format - a JSON array where each object contains exactly these 4 fields:
-{
-  "name": "Agent Name from the card",
-  "confidence_score": 85,
-  "explanation": "Brief explanation of why this score was assigned and how the agent matches the query",
-  "agent_card": {entire agent card object exactly as stored in registry}
-}
-
-Payload Requirements:
-- Order results by confidence_score (highest first) 
-- Explanation should be 1-2 sentences explaining the match reasoning
-- Agent_card must be the complete, unmodified card from the registry
-- You MUST return all the cards in the registry in the results, even if all of them have a score of 0.
-- You MUST NOT ADD ANYTHING ADDITIONAL TO THE PAYLOAD FORMAT LISTED BELOW.
+1. Retrieve the agent registry using `get_minified_agent_cards`.
+2. Compare the user’s query to each agent’s `name`, `description`, and each skill’s `name` and `description`.
+3. Assign a confidence score (0–100) to each agent:
+   - 100 = perfect match
+   - 0 = no relevance
+4. Return a JSON payload with the results.
 - You MUST WRAP THE PAYLOAD WITH three backticks, then the string 'json' then the payload, then 3 more backticks.
 - You MUST NOT DEVIATE FROM THE PAYLOAD FORMAT LISTED BELOW. Code is expecting to see this explicit format in order to parse the
   payload from your response.
 
-Example payload response:
+---
+
+### 📦 JSON Payload Format
+Return a JSON array, ordered by `confidence_score` (highest first). Each object must have:
+
 ```json
 [
   {
-    "name": "GeoSpatial Route Planner Agent",
-    "confidence_score": 92,
-    "explanation": "Perfect match for routing requests with traffic-aware optimization and custom mapping capabilities.",
-    "agent_card": {complete agent card object}
-  },
-  {
-    "name": "Weather Agent", 
-    "confidence_score": 67,
-    "explanation": "Partially relevant for location-based queries but focuses on weather rather than routing.",
-    "agent_card": {complete agent card object}
+    "name": "Agent Name",
+    "confidence_score": 85,
+    "explanation": "1–2 sentences explaining the match",
+    "agent_card": {full agent card object}
   }
 ]
-```
-
-Below is an example of a card that could be in the AGENT_REGISTRY:
-{
-  "name": "GeoSpatial Route Planner Agent",
-  "description": "Provides advanced route planning, traffic analysis, and custom map generation services. This agent can calculate optimal routes, estimate travel times considering real-time traffic, and create personalized maps with points of interest.",
-  "url": "https://georoute-agent.example.com/a2a/v1",
-  "provider": {
-    "organization": "Example Geo Services Inc.",
-    "url": "https://www.examplegeoservices.com"
-  },
-  "version": "1.2.0",
-  "documentationUrl": "https://docs.examplegeoservices.com/georoute-agent/api",
-  "capabilities": {
-    "streaming": True,
-    "pushNotifications": True,
-    "stateTransitionHistory": False
-  },
-  "authentication": {
-    "schemes": ["OAuth2"],
-    "credentials": "{\"authorizationUrl\": \"https://auth.examplegeoservices.com/authorize\", \"tokenUrl\": \"https://auth.examplegeoservices.com/token\", \"scopes\": {\"route:plan\": \"Allows planning new routes.\", \"map:custom\": \"Allows creating and managing custom maps.\"}}"
-  },
-  "defaultInputModes": ["application/json", "text/plain"],
-  "defaultOutputModes": ["application/json", "image/png"],
-  "skills": [
-    {
-      "id": "route-optimizer-traffic",
-      "name": "Traffic-Aware Route Optimizer",
-      "description": "Calculates the optimal driving route between two or more locations, taking into account real-time traffic conditions, road closures, and user preferences (e.g., avoid tolls, prefer highways).",
-      "tags": ["maps", "routing", "navigation", "directions", "traffic"],
-      "examples": [
-        "Plan a route from '1600 Amphitheatre Parkway, Mountain View, CA' to 'San Francisco International Airport' avoiding tolls.",
-        "{\"origin\": {\"lat\": 37.422, \"lng\": -122.084}, \"destination\": {\"lat\": 37.7749, \"lng\": -122.4194}, \"preferences\": [\"avoid_ferries\"]}"
-      ],
-      "inputModes": ["application/json", "text/plain"],
-      "outputModes": [
-        "application/json",
-        "application/vnd.geo+json",
-        "text/html"
-      ]
-    },
-    {
-      "id": "custom-map-generator",
-      "name": "Personalized Map Generator",
-      "description": "Creates custom map images or interactive map views based on user-defined points of interest, routes, and style preferences. Can overlay data layers.",
-      "tags": ["maps", "customization", "visualization", "cartography"],
-      "examples": [
-        "Generate a map of my upcoming road trip with all planned stops highlighted.",
-        "Show me a map visualizing all coffee shops within a 1-mile radius of my current location."
-      ],
-      "inputModes": ["application/json"],
-      "outputModes": [
-        "image/png",
-        "image/jpeg",
-        "application/json",
-        "text/html"
-      ]
-    }
-  ]
-}
 """
 
+debug_instructions = ""
 if log_level_name == 'DEBUG':
     logger.debug("Adding LLM debug instructions to the initial message.")
-    initial_agent_instructions += """
+    debug_instructions += """
 
 This program is currently running in debug mode, so it additional information (outside of the payload described previously)
 may be added to your response. Please add your reasoning step by step:
@@ -218,14 +257,16 @@ may be added to your response. Please add your reasoning step by step:
 
 CRITICAL - ALWAYS INCLUDE THE PAYLOAD PREVIOUSLY DESCRIBED in your response in addition to any other information you wish to share.
 """
+    #initial_agent_instructions += debug_instructions
 
 # --- Define Model Constants for easier use ---
 # Note: Specific model names might change. Refer to LiteLLM/Provider documentation.
 MODEL_GPT_4O = "openai/gpt-4o"
+MODEL_GPT_41 = "openai/gpt-4.1-mini"
 MODEL_CLAUDE_SONNET = "anthropic/claude-3-sonnet-20240229"
 
 # Set the active model here once so it can be switched out on just this line.
-ACTIVE_MODEL = MODEL_GPT_4O
+ACTIVE_MODEL = MODEL_GPT_41
 
 # Use one of the model constants defined earlier
 from google.adk.models.lite_llm import LiteLlm
@@ -372,6 +413,11 @@ async def handle_task(
         logger.debug("Getting all agent cards.")
         return list_agent_cards()
 
+    # LIST ALL AGENTS WITH MINIFIED CARDS
+    elif tool_name == "get_minified_agent_cards":
+        logger.debug("Getting all minified agent cards.")
+        return get_minified_agent_cards()
+
     else:
         logger.error(f"Unknown tool name: {tool_name}")
         raise HTTPException(status_code=400, detail=f"Unknown tool: {tool_name}")
@@ -379,6 +425,31 @@ async def handle_task(
 # ------------------------------
 # Functions
 # ------------------------------
+def before_agent_cb(callback_context: CallbackContext) -> Optional[types.Content]:
+    logger.info(f"BEFORE_AGENT_CALLBACK FOR: {callback_context.agent_name}")
+
+def after_agent_cb(callback_context: CallbackContext) -> Optional[types.Content]:
+    logger.info(f"AFTER_AGENT_CALLBACK FOR: {callback_context.agent_name}")
+
+def before_model_cb(callback_context: CallbackContext, llm_request: LlmRequest) -> Optional[LlmResponse]:
+    logger.info(f"BEFORE_MODEL_CALLBACK FOR: {callback_context.agent_name}")
+    logger.debug(f"Log level is: {log_level_name}")
+
+    if (log_level_name == "DEBUG"):
+        logger.debug(f"LLM Request Content: {llm_request}")
+
+        # Convert to dict or JSON
+        request_dict = llm_request.dict()
+        request_json = json.dumps(request_dict)
+        # Log size in bytes and estimated tokens
+        size_bytes = len(request_json.encode('utf-8'))
+        logger.debug(f"LLM request size: {size_bytes / 1024:.2f} KB")
+
+
+
+def after_model_cb(callback_context: CallbackContext, llm_response: LlmResponse) -> Optional[LlmResponse]:
+    logger.info(f"AFTER_MODEL_CALLBACK FOR: {callback_context.agent_name}")
+
 def register_agent(task_request: TaskRequest):
     logger.debug("In register_agent function.")
     try:
@@ -480,6 +551,37 @@ def remove_agent(task_request: TaskRequest):
     else:
         raise HTTPException(status_code=404, detail=f"Agent with agent_id '{agent_id}' not found.")
 
+def clean_json_safe(data):
+    try:
+        # Serialize + deserialize for guaranteed clean JSON
+        return orjson.loads(orjson.dumps(data))
+    except orjson.JSONEncodeError as e:
+        logger.error(f"orjson failed to serialize data: {e}")
+        raise
+
+def trim_agent_cards(agent_registry: dict) -> list:
+    """Return a list of agent cards with only essential fields."""
+    trimmed_cards = []
+    for card in agent_registry.values():
+        trimmed_card = {
+            "name": card.get("name"),
+            "description": card.get("description"),
+            "skills": [
+                {
+                    "name": skill.get("name"),
+                    "description": skill.get("description"),
+                    "tags": skill.get("tags", [])
+                }
+                for skill in card.get("skills", [])
+            ]
+        }
+         # Serialize + deserialize to enforce clean JSON
+        trimmed_card = clean_json_safe(trimmed_card)
+
+        trimmed_cards.append(trimmed_card)
+    logger.debug(f"Trimmed agent registry size: {len(json.dumps(trimmed_cards).encode('utf-8')) / 1024:.2f} KB")
+    return trimmed_cards
+
 async def search_agents(task_request: TaskRequest) -> str:
     logger.debug("In search_agents function.")
     try:
@@ -513,7 +615,6 @@ def get_agent_card(task_request: TaskRequest):
     else:
         raise HTTPException(status_code=404, detail=f"Agent with agent_id '{agent_id}' not found.")
 
-# This is decorated as an agent_tool so that LLM can call it when running.
 def list_agent_cards():
     logger.info("List agent cards request received.")
     if (log_level_name == "DEBUG"):
@@ -522,7 +623,47 @@ def list_agent_cards():
             logger.debug(f"Registry Key: {key}: \nValue: {value}")
             logger.debug("+++++++++++++++++++++++++++++++++++")
 
+    logger.info("Returning list of agent cards.")
     return list(AGENT_REGISTRY.values())
+
+def enrich_with_full_cards(llm_results: list, agent_registry: dict) -> list:
+    """
+    Replace the minified agent_card in LLM results with the full agent card
+    from the registry, based on matching agent name.
+    """
+    enriched = []
+
+    for result in llm_results:
+        minified_card = result.get("agent_card", {})
+        agent_name = minified_card.get("name")
+
+        if not agent_name:
+            logger.warning("LLM result missing agent_card.name; skipping enrichment.")
+            enriched.append(result)
+            continue
+
+        # Find full card by name
+        full_card = next(
+            (card for card in agent_registry.values() if card.get("name") == agent_name),
+            None
+        )
+
+        if full_card:
+            logger.debug(f"Replacing minified card for '{agent_name}' with full card.")
+            result["agent_card"] = full_card
+        else:
+            logger.warning(f"No full agent card found for '{agent_name}'. Leaving minified card.")
+        enriched.append(result)
+    return enriched
+
+def get_minified_agent_cards():
+    logger.debug("get_minified_agent_cards request received.")
+    start_tool = time.time()
+    minified_cards = trim_agent_cards(AGENT_REGISTRY)
+    logger.info(f"get_minified_agent_cards duration: {time.time() - start_tool:.2f}s")
+
+    logger.debug(f"Returning list of agent cards: {minified_cards}")
+    return minified_cards
 
 def parse_message_json(task_request: TaskRequest) -> dict:    
     try:
@@ -622,9 +763,14 @@ async def process_search_request(task_id: str, user_query: str):
 
     logger.debug("Creating response task for A2A Caller.")
     json_results = extract_json_from_response(agent_reply_text)
-    logger.debug("+++++++++++++++++++++++++++++++++++++")
-    logger.debug(f"Got json_results from extraction: {json_results} ")
-    logger.debug("+++++++++++++++++++++++++++++++++++++")
+
+    # Enrich minified agent cards with full cards
+    json_results = enrich_with_full_cards(json_results, AGENT_REGISTRY)
+
+    logger.debug("++++++++++++++++++++++++++++++++++++++++++++")
+    logger.debug(f"Got enriched json_results from extraction: ")
+    logger.debug(f"{json_results} ")
+    logger.debug("++++++++++++++++++++++++++++++++++++++++++++")
 
     logger.debug("Building response_task.")
     response_task = {
@@ -689,12 +835,16 @@ async def create_agent():
     logger.debug(f"Creating Agent")
     global registry_agent, runner 
     try:
-        registry_agent = Agent(
+        registry_agent = LlmAgent(
             name="registry_agent",
             model=LiteLlm(model=ACTIVE_MODEL),
-            description="Registry agent that uses send_email send notifications.",
+            description="Registry agent maintains a list of agents on the network and answers agent search requests from other agents.",
             instruction=initial_agent_instructions,
-            tools=[list_agent_cards]
+            tools=[get_minified_agent_cards],
+            before_agent_callback=before_agent_cb,
+            after_agent_callback=after_agent_cb,
+            before_model_callback=before_model_cb,
+            after_model_callback=after_model_cb
         )
 
         logger.debug(f"Agent '{registry_agent.name}' created using model '{ACTIVE_MODEL}'.")

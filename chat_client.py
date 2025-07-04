@@ -60,7 +60,7 @@ while True:
             agent_reply_text = ""
             for part in agent_message.get("parts", []):
                 if "text" in part:
-                    agent_reply_text += part["text"]
+                    agent_reply_text += part["text"] or ""
             print("Agent's reply:", agent_reply_text)
         else:
             print("No messages in response!")

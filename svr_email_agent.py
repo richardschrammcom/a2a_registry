@@ -74,10 +74,11 @@ APP_NAME = "email_agent"
 # --- Define Model Constants for easier use ---
 # Note: Specific model names might change. Refer to LiteLLM/Provider documentation.
 MODEL_GPT_4O = "openai/gpt-4o"
+MODEL_GPT_41 = "openai/gpt-4.1-mini"
 MODEL_CLAUDE_SONNET = "anthropic/claude-3-sonnet-20240229"
 
 # Set the active model here once so it can be switched out on just this line.
-ACTIVE_MODEL = MODEL_GPT_4O
+ACTIVE_MODEL = MODEL_GPT_41
 
 # Define the Email Agent
 # Use one of the model constants defined earlier

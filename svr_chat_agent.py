@@ -7,12 +7,13 @@ import uuid
 import requests
 
 # Google Agent Imports
-from google.adk.agents import Agent
+from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm 
 from google.adk.sessions import InMemorySessionService
 from google.adk.runners import Runner
 from google.genai import types 
-#from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset, StdioServerParameters
+from google.adk.agents.callback_context import CallbackContext
+from google.adk.models import LlmResponse, LlmRequest
 
 # Imports for being an Agent Host
 from fastapi import FastAPI, Request, Header, HTTPException, Body
@@ -44,10 +45,11 @@ CONFIG_FILE = os.path.join(os.path.dirname(__file__), f"{SCRIPT_NAME}_config.jso
 # --- Define Model Constants for easier use ---
 # Note: Specific model names might change. Refer to LiteLLM/Provider documentation.
 MODEL_GPT_4O = "openai/gpt-4o"
+MODEL_GPT_41 = "openai/gpt-4.1-mini"
 MODEL_CLAUDE_SONNET = "anthropic/claude-3-sonnet-20240229"
 
 # Set the active model here once so it can be switched out on just this line.
-ACTIVE_MODEL = MODEL_GPT_4O
+ACTIVE_MODEL = MODEL_GPT_41
 
 # Define the Fetch Agent
 # Use one of the model constants defined earlier
@@ -192,6 +194,18 @@ async def handle_task(
     logger.debug(f"Returning the response: {response_task}")
     return JSONResponse(response_task)
 # -------------------------------------------------------------------
+
+def before_agent_cb(callback_context: CallbackContext) -> Optional[types.Content]:
+    logger.info(f"BEFORE_AGENT_CALLBACK FOR: {callback_context.agent_name}")
+
+def after_agent_cb(callback_context: CallbackContext) -> Optional[types.Content]:
+    logger.info(f"AFTER_AGENT_CALLBACK FOR: {callback_context.agent_name}")
+
+def before_model_cb(callback_context: CallbackContext, llm_request: LlmRequest) -> Optional[LlmResponse]:
+    logger.info(f"BEFORE_MODEL_CALLBACK FOR: {callback_context.agent_name}")
+
+def after_model_cb(callback_context: CallbackContext, llm_response: LlmResponse) -> Optional[LlmResponse]:
+    logger.info(f"AFTER_MODEL_CALLBACK FOR: {callback_context.agent_name}")
 async def get_session(user_id: str, session_id: str):
     try:
         logger.debug("Getting Request Session.")
@@ -399,6 +413,7 @@ async def query_registry(user_req: str) -> dict:
     logger.debug(json.dumps(payload, indent=2))
 
     # Send the request
+    logger.info("Querying the registry agent to find someone to help me.")
     response = requests.post(
         reg_url,
         headers={
@@ -409,6 +424,7 @@ async def query_registry(user_req: str) -> dict:
     )
 
     # Parse the JSON response
+    logger.info("Received response from the registry.")
     if response.status_code == 200:
         try:
             return response.json()
@@ -438,6 +454,7 @@ async def call_remote_agent(query: str, card: dict) -> dict:
        - 'error' containing a boolean value to indicate whether the resulted in an error or not.
        - 'message' containing a string that is the response from the remote agent. That message be a string, json text, or other formats.
     """
+    logger.info(f"Calling agent {card.get('name')} from {card.get('url')}")
     logger.debug("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
     logger.debug("Calling agent to assist with query:")
     logger.debug(f"Query: {query}")
@@ -445,7 +462,6 @@ async def call_remote_agent(query: str, card: dict) -> dict:
     logger.debug("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
 
     # Let's parse the card and make the call.
-    logger.info(f"Calling agent {card.get('name')} from {card.get('url')}")
     task_id = str(uuid.uuid4())  # generate a random unique task ID
     task_payload = {
         "id": task_id,
@@ -460,6 +476,7 @@ async def call_remote_agent(query: str, card: dict) -> dict:
 
     tasks_send_url = f"{card.get('url')}/tasks/send"
     result = requests.post(tasks_send_url, json=task_payload)
+    logger.info(f"Received a response from {card.get('name')}")
     if result.status_code != 200:
         logger.error(f"Request to agent failed:  {result.status_code}, {result.text}")
         raise RuntimeError(f"Task request failed: {result.status_code}, {result.text}")
@@ -545,13 +562,17 @@ async def create_agent():
         - IF YOU STILL ARE NOT ABLE TO FIND AN AGENT OR SERVICE THE REQUEST AFTER USING YOUR AVAILABLE TOOLS, THEN EXPLAIN WHY TO THE USER.
 
         """
-        chat_agent = Agent(
+        chat_agent = LlmAgent(
             name="chat_agent",
             # Key change: Wrap the LiteLLM model identifier
             model=LiteLlm(model=ACTIVE_MODEL),
             description="An agent that satisfies user chat requests, and dynamically enlists other agents on the network to assist as needed.",
             instruction=agent_prompt,
             tools=tools,
+            before_agent_callback=before_agent_cb,
+            after_agent_callback=after_agent_cb,
+            before_model_callback=before_model_cb,
+            after_model_callback=after_model_cb
         )
         logger.debug(f"Agent '{chat_agent.name}' created using model '{ACTIVE_MODEL}'.")
 
