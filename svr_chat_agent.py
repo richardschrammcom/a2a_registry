@@ -18,9 +18,13 @@ from google.adk.models import LlmResponse, LlmRequest
 # Imports for being an Agent Host
 from fastapi import FastAPI, Request, Header, HTTPException, Body
 from fastapi.responses import JSONResponse
+from sse_starlette.sse import EventSourceResponse
 
-from typing import Optional, List, Any
+from typing import Optional, List, Any, Dict, AsyncGenerator
 from pydantic import BaseModel
+import asyncio
+import json
+from datetime import datetime
 
 import warnings
 # Ignore all warnings
@@ -60,6 +64,57 @@ AGENT_MODEL = ACTIVE_MODEL # Starting with OpenAI
 chat_agent = None # Initialize to None
 runner = None      # Initialize runner to None
 session_service = InMemorySessionService() # Create a dedicated service
+
+# Global event publisher for SSE streaming
+event_publishers: Dict[str, List[asyncio.Queue]] = {}
+
+# Context variable to pass task_id to tools
+from contextvars import ContextVar
+current_task_id: ContextVar[Optional[str]] = ContextVar('current_task_id', default=None)
+
+class StreamEvent:
+    def __init__(self, event_type: str, data: Dict[str, Any], task_id: str):
+        self.event_type = event_type
+        self.data = data
+        self.task_id = task_id
+        self.timestamp = datetime.now().isoformat()
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "event": self.event_type,
+            "data": {
+                **self.data,
+                "timestamp": self.timestamp,
+                "task_id": self.task_id
+            }
+        }
+
+async def publish_event(task_id: str, event_type: str, data: Dict[str, Any]):
+    """Publish an event to all subscribers for a given task_id"""
+    if task_id in event_publishers:
+        event = StreamEvent(event_type, data, task_id)
+        for queue in event_publishers[task_id]:
+            try:
+                await queue.put(event)
+            except:
+                # Queue might be closed, ignore
+                pass
+
+def add_event_subscriber(task_id: str) -> asyncio.Queue:
+    """Add a new event subscriber for a task_id"""
+    if task_id not in event_publishers:
+        event_publishers[task_id] = []
+    
+    queue = asyncio.Queue()
+    event_publishers[task_id].append(queue)
+    return queue
+
+def remove_event_subscriber(task_id: str, queue: asyncio.Queue):
+    """Remove an event subscriber"""
+    if task_id in event_publishers and queue in event_publishers[task_id]:
+        event_publishers[task_id].remove(queue)
+        if not event_publishers[task_id]:
+            del event_publishers[task_id]
 
 # -------------------------------------------------------------------
 # Set up the FastAPI app and use
@@ -140,7 +195,8 @@ def get_agent_card():
 async def handle_task(
     task_request: TaskRequest = Body(...),
     x_api_key: Optional[str] = Header(None),
-    request: Request = None
+    request: Request = None,
+    stream: bool = False
 ):
     # Endpoint to receive and process task requests.
 
@@ -166,13 +222,41 @@ async def handle_task(
     # otherwise create a new one.
     # ############################################
     
+    # Check if streaming was requested
+    if stream:
+        # Generate a unique stream task ID for this request
+        stream_task_id = str(uuid.uuid4())
+        stream_url = f"{request.base_url}tasks/stream/{stream_task_id}"
+        
+        # Start processing in background
+        async def background_processing():
+            try:
+                await process_user_message(user_message, req_session, stream_task_id)
+            except Exception as e:
+                logger.error(f"Error in background processing: {e}")
+                await publish_event(stream_task_id, "error", {
+                    "message": f"Error processing request: {str(e)}"
+                })
+                await publish_event(stream_task_id, "stream_end", {
+                    "message": "Stream completed with error"
+                })
+        
+        asyncio.create_task(background_processing())
+        
+        return JSONResponse({
+            "id": task_id,
+            "status": {"state": "processing"},
+            "stream_url": stream_url,
+            "stream_task_id": stream_task_id,
+            "message": "Task is being processed. Connect to stream_url for real-time updates."
+        })
 
     # Compose the prompt for the LLM based on new instructions
     logger.debug(f"Session ID: {req_session.id} User ID: {req_session.user_id}")
     logger.debug(f"User Message: {user_message}")
 
     # This requires nest_asyncio.apply() earlier to allow nested asyncio.run() inside Flask.
-    agent_reply_text = await process_user_message(user_message, req_session)
+    agent_reply_text = await process_user_message(user_message, req_session, task_id)
     logger.debug("+++++++++++++++++++++++++++++++")
     logger.debug(f"The handle_task function received agent reply text from process_user_message: {agent_reply_text}")
     logger.debug("+++++++++++++++++++++++++++++++")
@@ -194,6 +278,52 @@ async def handle_task(
     }
     logger.debug(f"Returning the response: {response_task}")
     return JSONResponse(response_task)
+
+# SSE streaming endpoint
+@app.get("/tasks/stream/{task_id}")
+async def stream_task_events(task_id: str):
+    """Stream real-time events for a specific task"""
+    
+    async def event_generator() -> AsyncGenerator[Dict[str, Any], None]:
+        queue = add_event_subscriber(task_id)
+        
+        try:
+            # Send initial connection event
+            yield {
+                "event": "connected",
+                "data": json.dumps({
+                    "message": "Connected to task stream",
+                    "task_id": task_id,
+                    "timestamp": datetime.now().isoformat()
+                })
+            }
+            
+            while True:
+                try:
+                    # Wait for events with timeout
+                    event = await asyncio.wait_for(queue.get(), timeout=30.0)
+                    yield {
+                        "event": event.event_type,
+                        "data": json.dumps(event.data)
+                    }
+                except asyncio.TimeoutError:
+                    # Send keepalive
+                    yield {
+                        "event": "keepalive",
+                        "data": json.dumps({
+                            "message": "Connection alive",
+                            "timestamp": datetime.now().isoformat()
+                        })
+                    }
+                except Exception as e:
+                    logger.error(f"Error in event stream: {e}")
+                    break
+                    
+        finally:
+            remove_event_subscriber(task_id, queue)
+    
+    return EventSourceResponse(event_generator())
+
 # -------------------------------------------------------------------
 
 def before_agent_cb(callback_context: CallbackContext) -> Optional[types.Content]:
@@ -238,16 +368,24 @@ def parse_message_text(task_request: TaskRequest) -> str:
         logger.error(f"Error accessing message content: {e}")
         raise HTTPException(status_code=422, detail="Invalid or malformed message format.")
 
-async def process_user_message(message: str, req_session) -> str:
+async def process_user_message(message: str, req_session, task_id: str = None) -> str:
     try:
            logger.debug("In process user message.")
            query = message  # Use the newly composed prompt directly
            logger.debug(f"User to run: {query} ")
+           
+           if task_id:
+               await publish_event(task_id, "processing_start", {
+                   "message": "Starting to process user message",
+                   "query": query
+               })
+           
            logger.debug("Making request to call_agent_async function.")
            response = await call_agent_async(query = query,
                           runner = app.runner,
                           user_id=req_session.user_id,
-                          session_id=req_session.id)
+                          session_id=req_session.id,
+                          task_id=task_id)
            logger.debug(f'*******************************************')
            logger.debug(f"The call_agent_async function returned the response {response}. \nReturning that.")        
            logger.debug(f'*******************************************')
@@ -255,17 +393,27 @@ async def process_user_message(message: str, req_session) -> str:
     except Exception as e:
             logger.error(f"An error occurred: {e}")
 
-async def call_agent_async(query: str, runner, user_id, session_id):
+async def call_agent_async(query: str, runner, user_id, session_id, task_id: str = None):
   """Sends a query to the agent and prints the final response."""
   logger.debug(f'*******************************************')
   logger.debug(f"In call_agent_async")
   logger.debug(f"\n>>> User Query: {query}")
   logger.debug(f'*******************************************')
 
+  # Set the task_id in context for tools to access
+  if task_id:
+      current_task_id.set(task_id)
+
   # Prepare the user's message in ADK format
   content = types.Content(role='user', parts=[types.Part(text=query)])
 
   final_response_text = "Agent did not produce a final response." # Default
+
+  if task_id:
+      await publish_event(task_id, "agent_thinking", {
+          "message": "Agent is processing your request...",
+          "query": query
+      })
 
   # Key Concept: run_async executes the agent logic and yields Events.
   # We iterate through events to find the final answer.
@@ -276,6 +424,41 @@ async def call_agent_async(query: str, runner, user_id, session_id):
       # You can uncomment the line below to see *all* events during execution
       logger.debug(f"  [Event] Author: {event.author}, Type: {type(event).__name__}, Final: {event.is_final_response()}, Content: {event.content}")
 
+      # Stream ADK events to client
+      if task_id:
+          event_data = {
+              "author": event.author,
+              "event_type": type(event).__name__,
+              "is_final": event.is_final_response()
+          }
+          
+          # Add content if available
+          if event.content and event.content.parts:
+              event_data["content"] = event.content.parts[0].text if event.content.parts[0].text else ""
+          
+          # Check if this is a function call
+          if hasattr(event, 'actions') and event.actions:
+              if hasattr(event.actions, 'function_calls') and event.actions.function_calls:
+                  func_call = event.actions.function_calls[0]
+                  event_data["function_call"] = {
+                      "name": func_call.name,
+                      "arguments": func_call.args if hasattr(func_call, 'args') else {}
+                  }
+                  
+                  # Publish specific events for function calls
+                  if func_call.name == "query_registry":
+                      await publish_event(task_id, "registry_query", {
+                          "message": "Searching for agents to help with your request...",
+                          "function": func_call.name
+                      })
+                  elif func_call.name == "call_remote_agent":
+                      await publish_event(task_id, "agent_call", {
+                          "message": "Calling another agent to assist...",
+                          "function": func_call.name
+                      })
+          
+          await publish_event(task_id, "agent_event", event_data)
+
       # Key Concept: is_final_response() marks the concluding message for the turn.
       if event.is_final_response():
           if event.content and event.content.parts:
@@ -285,6 +468,16 @@ async def call_agent_async(query: str, runner, user_id, session_id):
              final_response_text = f"Agent escalated: {event.error_message or 'No specific message.'}"
           # Add more checks here if needed (e.g., specific error codes)
           break # Stop processing events once the final response is found
+
+  if task_id:
+      await publish_event(task_id, "final_response", {
+          "message": "Task completed",
+          "response": final_response_text
+      })
+      # Signal end of stream
+      await publish_event(task_id, "stream_end", {
+          "message": "Stream completed"
+      })
 
   logger.debug(f"<<< Agent Response: {final_response_text}")
   return final_response_text
@@ -384,6 +577,13 @@ async def query_registry(user_req: str) -> dict:
     logger.debug(f"Querying Registry with: {user_req}")
     logger.debug("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
 
+    task_id = current_task_id.get()
+    if task_id:
+        await publish_event(task_id, "registry_query_start", {
+            "message": f"Searching registry for: {user_req}",
+            "query": user_req
+        })
+
     config = load_config()
     agent_id = config.get("agent_id","")
     api_key = config.get("api_key","")
@@ -428,17 +628,55 @@ async def query_registry(user_req: str) -> dict:
     logger.info("Received response from the registry.")
     if response.status_code == 200:
         try:
-            return response.json()
+            result = response.json()
+            if task_id:
+                # The registry response structure is different - need to parse the actual response
+                try:
+                    # Extract the registry response from the nested structure
+                    messages = result.get('messages', [])
+                    if messages:
+                        agent_response = messages[-1]
+                        response_parts = agent_response.get('parts', [])
+                        if response_parts and 'text' in response_parts[0]:
+                            response_text = response_parts[0]['text']
+                            # Try to parse as JSON to get agent count
+                            try:
+                                registry_data = json.loads(response_text)
+                                agent_count = len(registry_data.get('agents', []))
+                            except:
+                                # If not JSON, count based on presence of agents in text
+                                agent_count = 1 if 'agent' in response_text.lower() else 0
+                        else:
+                            agent_count = 0
+                    else:
+                        agent_count = 0
+                        
+                    await publish_event(task_id, "registry_response", {
+                        "message": f"Registry found {agent_count} matching agents",
+                        "agent_count": agent_count
+                    })
+                except Exception as e:
+                    logger.debug(f"Error parsing registry response: {e}")
+                    await publish_event(task_id, "registry_response", {
+                        "message": "Registry responded",
+                        "agent_count": "unknown"
+                    })
+            return result
         except ValueError:
             logger.error("Failed to parse JSON response:", response.text)
     else:
         logger.error(f"Query Registry failed with status {response.status_code}: {response.text}")
+        if task_id:
+            await publish_event(task_id, "registry_error", {
+                "message": f"Registry query failed: {response.status_code}",
+                "error": response.text
+            })
         return {
             "error": True,
             "message": f"Query Registry failed with status {response.status_code}: {response.text}"
         } 
 
-async def call_remote_agent(query: str, card: dict) -> dict:
+async def call_remote_agent(query: str, card: dict, **kwargs) -> dict:
     """
     The call_remote_agent tool creates a call to a trusted agent on the network using the Google
     A2A protocol. This tool will read the agent card passed in to it, along with the 
@@ -462,10 +700,19 @@ async def call_remote_agent(query: str, card: dict) -> dict:
     logger.debug(f"Agent Card: {card}")
     logger.debug("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
 
+    task_id = current_task_id.get()
+    if task_id:
+        await publish_event(task_id, "agent_call_start", {
+            "message": f"Calling {card.get('name')} agent",
+            "agent_name": card.get('name'),
+            "agent_url": card.get('url'),
+            "query": query
+        })
+
     # Let's parse the card and make the call.
-    task_id = str(uuid.uuid4())  # generate a random unique task ID
+    call_task_id = str(uuid.uuid4())  # generate a random unique task ID
     task_payload = {
-        "id": task_id,
+        "id": call_task_id,
         "message": {
             "role": "user",
             "parts": [
@@ -473,13 +720,18 @@ async def call_remote_agent(query: str, card: dict) -> dict:
             ]
         }
     }
-    logger.info(f"Sending task {task_id} to agent with message: '{query}'")
+    logger.info(f"Sending task {call_task_id} to agent with message: '{query}'")
 
     tasks_send_url = f"{card.get('url')}/tasks/send"
     result = requests.post(tasks_send_url, json=task_payload)
     logger.info(f"Received a response from {card.get('name')}")
     if result.status_code != 200:
         logger.error(f"Request to agent failed:  {result.status_code}, {result.text}")
+        if task_id:
+            await publish_event(task_id, "agent_call_error", {
+                "message": f"Failed to call {card.get('name')} agent",
+                "error": f"{result.status_code}: {result.text}"
+            })
         raise RuntimeError(f"Task request failed: {result.status_code}, {result.text}")
     task_response = result.json()
 
@@ -491,19 +743,37 @@ async def call_remote_agent(query: str, card: dict) -> dict:
             for part in agent_message.get("parts", []):
                 if "text" in part:
                     agent_reply_text += part["text"]
-            logger.debug("Agent's reply:", agent_reply_text)
+            logger.debug(f"Agent's reply: {agent_reply_text}")
+            
+            if task_id:
+                await publish_event(task_id, "agent_call_response", {
+                    "message": f"Received response from {card.get('name')} agent",
+                    "agent_name": card.get('name'),
+                    "response": agent_reply_text[:100] + "..." if len(agent_reply_text) > 100 else agent_reply_text
+                })
+            
             return {
                 "error": False,
                 "message": agent_reply_text
             } 
         else:
             logger.error("No messages in response!")
+            if task_id:
+                await publish_event(task_id, "agent_call_error", {
+                    "message": f"No response from {card.get('name')} agent",
+                    "error": "No messages in response"
+                })
             return {
                 "error": True,
                 "message": task_response.get("status")
             } 
     else:
         logger.error("Task did not complete. Status:", task_response.get("status"))
+        if task_id:
+            await publish_event(task_id, "agent_call_error", {
+                "message": f"Task failed for {card.get('name')} agent",
+                "error": str(task_response.get("status"))
+            })
         return {
             "error": True,
             "message": f"An error occurred: {task_response.get('status')}"
@@ -516,7 +786,7 @@ async def create_agent():
     logger.debug(f"******************************************")
     global chat_agent, runner  # Ensure modifying the global variables
     try:
-        # Define tools as proxy functions
+        # Define tools (they will access task_id from context variable)
         tools = [query_registry, call_remote_agent]
         agent_prompt=f"""
         You are a client agent powered by {ACTIVE_MODEL}. Your primary responsibility is to respond to user requests to the best of your ability. 
