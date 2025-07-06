@@ -46,10 +46,11 @@ CONFIG_FILE = os.path.join(os.path.dirname(__file__), f"{SCRIPT_NAME}_config.jso
 # Note: Specific model names might change. Refer to LiteLLM/Provider documentation.
 MODEL_GPT_4O = "openai/gpt-4o"
 MODEL_GPT_41 = "openai/gpt-4.1-mini"
+MODEL_GPT_35T = "openai/gpt-3.5-turbo"
 MODEL_CLAUDE_SONNET = "anthropic/claude-3-sonnet-20240229"
 
 # Set the active model here once so it can be switched out on just this line.
-ACTIVE_MODEL = MODEL_GPT_41
+ACTIVE_MODEL = MODEL_GPT_35T
 
 # Define the Fetch Agent
 # Use one of the model constants defined earlier
@@ -565,7 +566,7 @@ async def create_agent():
         chat_agent = LlmAgent(
             name="chat_agent",
             # Key change: Wrap the LiteLLM model identifier
-            model=LiteLlm(model=ACTIVE_MODEL),
+            model=LiteLlm(model=ACTIVE_MODEL, stream=True),
             description="An agent that satisfies user chat requests, and dynamically enlists other agents on the network to assist as needed.",
             instruction=agent_prompt,
             tools=tools,
