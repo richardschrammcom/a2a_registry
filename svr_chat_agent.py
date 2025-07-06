@@ -411,7 +411,7 @@ async def call_agent_async(query: str, runner, user_id, session_id, task_id: str
 
   if task_id:
       await publish_event(task_id, "agent_thinking", {
-          "message": "Agent is processing your request...",
+          "message": "Thinking about how to help you...",
           "query": query
       })
 
@@ -645,7 +645,12 @@ async def query_registry(user_req: str) -> dict:
                                 agent_count = len(registry_data.get('agents', []))
                             except:
                                 # If not JSON, count based on presence of agents in text
-                                agent_count = 1 if 'agent' in response_text.lower() else 0
+                                # Handle case where response_text might be a list or other type
+                                try:
+                                    response_str = str(response_text) if not isinstance(response_text, str) else response_text
+                                    agent_count = 1 if 'agent' in response_str.lower() else 0
+                                except:
+                                    agent_count = 0
                         else:
                             agent_count = 0
                     else:

@@ -49,23 +49,34 @@ def stream_events(stream_url):
                     if event.event == "connected":
                         print("🔄 Connected to agent stream...")
                     elif event.event == "processing_start":
-                        print("🤖 Agent is processing your request...")
+                        print("🤖 Let me process your request...")
                     elif event.event == "agent_thinking":
-                        print("💭 Agent is thinking...")
+                        print("💭 Thinking about how to help you...")
                     elif event.event == "registry_query_start":
-                        print(f"🔍 {data.get('message', 'Searching registry...')}")
+                        user_req = data.get('query', 'help with this request')
+                        print(f"🔍 I'm going to need help with this request. Searching the registry for an agent that can {user_req}...")
                     elif event.event == "registry_response":
-                        print(f"📋 {data.get('message', 'Registry responded')}")
+                        agent_count = data.get('agent_count', 0)
+                        if agent_count > 0:
+                            if agent_count == 1:
+                                print(f"📋 Great! The registry found an agent that can help us.")
+                            else:
+                                print(f"📋 Excellent! The registry found {agent_count} agents that can help us.")
+                        else:
+                            print(f"📋 The registry didn't find any agents for this request.")
                     elif event.event == "agent_call_start":
-                        print(f"📞 {data.get('message', 'Calling another agent...')}")
+                        agent_name = data.get('agent_name', 'another agent')
+                        print(f"📞 Passing your request to the {agent_name}...")
                     elif event.event == "agent_call_response":
-                        print(f"✅ {data.get('message', 'Agent responded')}")
+                        agent_name = data.get('agent_name', 'agent')
+                        print(f"✅ The {agent_name} responded that it successfully completed your request!")
                     elif event.event == "final_response":
-                        print("\n🎯 Final Response:")
+                        print("\n🎯 ")
                         final_response = data.get('response', '')
                         print(final_response)
+                        print("\nWhat else can I do for you today? (or type 'quit' or 'exit' to quit)")
                     elif event.event == "stream_end":
-                        print("✅ Stream completed")
+                        # Don't print anything here, final_response handles the closing
                         break
                     elif event.event == "registry_error" or event.event == "agent_call_error":
                         print(f"❌ {data.get('message', 'Error occurred')}")
