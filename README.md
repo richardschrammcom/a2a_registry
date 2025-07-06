@@ -233,17 +233,57 @@ uvicorn svr_sms_agent:app --host 0.0.0.0 --port 6003
 
 ### Using the Command Line Client
 
-Once agents are running, test the system:
+The chat client supports both traditional request-response mode and real-time streaming mode for enhanced user experience.
+
+#### Basic Usage
 ```bash
 python chat_client.py
 ```
 
-Example interactions:
+#### Streaming Mode (Recommended)
+For real-time updates during agent processing:
+```bash
+python chat_client.py --stream
+```
+
+#### Interactive Mode Switching
+You can switch between modes during a session:
+```
+Enter a query: toggle
+# Switches between streaming and non-streaming modes
+```
+
+#### Example Interactions
+
+**Non-streaming mode:**
 ```
 Enter a query: Send an email to john@example.com saying hello
+Agent's reply: I've successfully sent the email to john@example.com...
+
 Enter a query: Send an SMS to 555-123-4567 saying "Meeting at 3pm"
-Enter a query: What agents are available in the registry?
-Enter a query: exit
+Agent's reply: I've successfully sent the SMS message...
+```
+
+**Streaming mode (provides real-time updates):**
+```
+Enter a query: Send an SMS to 555-123-4567 saying "Meeting at 3pm"
+🔄 Connected to agent stream...
+💭 Thinking about how to help you...
+🔍 I'm going to need help with this request. Searching the registry for an agent that can send a text message...
+📋 Great! The registry found an agent that can help us.
+📞 Passing your request to the SMSAgent...
+✅ The SMSAgent responded that it successfully completed your request!
+
+🎯 I've successfully sent the SMS message "Meeting at 3pm" to 555-123-4567. If you need further assistance or have any other requests, feel free to let me know!
+
+What else can I do for you today? (or type 'quit' or 'exit' to quit)
+```
+
+#### Additional Commands
+```
+Enter a query: my name is Rich         # Set conversation context
+Enter a query: what's my name?         # Test session continuity  
+Enter a query: exit                    # Quit the client
 ```
 
 ### Stopping the Agents
