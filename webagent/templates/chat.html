@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chat Agent Web Interface</title>
+    
+    <!-- Favicon -->
+    <link rel="icon" type="image/x-icon" href="{{ url_for('static', path='favicon.ico') }}">
+    
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    
+    <!-- Custom CSS -->
+    <link href="{{ url_for('static', path='css/chat.css') }}?v={{ cache_bust }}" rel="stylesheet">
+    
+    <!-- Font Awesome for icons -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+</head>
+<body>
+    <div class="container-fluid h-100">
+        <div class="row h-100">
+            <div class="col-12 h-100 d-flex flex-column">
+                <!-- Header -->
+                <div class="header-section d-flex align-items-center justify-content-between p-3">
+                    <div class="logo-section d-flex align-items-center">
+                        <img src="{{ url_for('static', path='images/' + logo_image) }}" alt="Logo" class="logo-placeholder">
+                        <h4 class="mb-0 ms-3 text-primary">AI Chat Agent</h4>
+                    </div>
+                    
+                    <div class="status-section d-flex align-items-center">
+                        {% if agent_available %}
+                            <span class="status-indicator online"></span>
+                            <span class="status-text text-success">Agent Online</span>
+                        {% else %}
+                            <span class="status-indicator offline"></span>
+                            <span class="status-text text-danger">Agent Offline</span>
+                        {% endif %}
+                    </div>
+                </div>
+                
+                <!-- Chat Messages Area -->
+                <div class="chat-container flex-grow-1 p-3">
+                    <div id="chat-messages" class="chat-messages">
+                        <!-- Welcome message -->
+                        <div class="message-wrapper agent-message">
+                            <div class="message-bubble agent-bubble">
+                                <div class="message-content">
+                                    <i class="fas fa-robot me-2"></i>
+                                    Hello! I'm your AI assistant. How can I help you today?
+                                </div>
+                                <div class="message-time" id="welcome-time"></div>
+                            </div>
+                        </div>
+                        
+                        <!-- Connection error message (hidden by default) -->
+                        <div id="error-message" class="message-wrapper agent-message d-none">
+                            <div class="message-bubble error-bubble">
+                                <div class="message-content">
+                                    <i class="fas fa-exclamation-triangle me-2"></i>
+                                    <span id="error-text">Unable to connect to the chat agent. Please check that the agent is running on {{ agent_url }}.</span>
+                                </div>
+                                <div class="message-time" id="welcome-time"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Loading indicator (positioned above input) -->
+                <div id="loading-indicator" class="text-center m-3 p-3 d-none" style="background-color: #e3f2fd; border-radius: 12px; border: 2px solid #2196f3; box-shadow: 0 4px 8px rgba(0,0,0,0.1);">
+                    <div class="spinner-border text-primary" role="status" style="width: 2rem; height: 2rem;">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                    <div class="mt-2">
+                        <span class="text-primary fw-bold fs-6">Agent is processing your request...</span>
+                    </div>
+                </div>
+
+                <!-- Input Area -->
+                <div class="input-section p-3">
+                    <form id="chat-form" class="d-flex">
+                        <div class="input-group">
+                            <input 
+                                type="text" 
+                                id="message-input" 
+                                class="form-control message-input" 
+                                placeholder="Enter text here..."
+                                autocomplete="off"
+                                {% if not agent_available %}disabled{% endif %}
+                            >
+                            <button 
+                                type="submit" 
+                                class="btn btn-primary send-button"
+                                {% if not agent_available %}disabled{% endif %}
+                            >
+                                <i class="fas fa-paper-plane"></i>
+                                <span class="d-none d-sm-inline ms-1">Send</span>
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bootstrap JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    
+    <!-- Custom JavaScript -->
+    <script src="{{ url_for('static', path='js/chat.js') }}?v={{ cache_bust }}"></script>
+    
+    <script>
+        // Initialize the chat application
+        document.addEventListener('DOMContentLoaded', function() {
+            const sessionId = '{{ session_id }}';
+            const agentAvailable = {{ 'true' if agent_available else 'false' }};
+            
+            // Set welcome message time
+            document.getElementById('welcome-time').textContent = getCurrentTime();
+            
+            // Initialize chat functionality
+            initializeChat(sessionId, agentAvailable);
+            
+            // Show error message if agent is not available
+            if (!agentAvailable) {
+                document.getElementById('error-message').classList.remove('d-none');
+            }
+        });
+    </script>
+</body>
+</html>

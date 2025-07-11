@@ -65,7 +65,7 @@ uvicorn svr_chat_agent:app --host 0.0.0.0 --port 6002 > chat_agent.log 2>&1 &
 echo $! > chat_agent.pid
 
 if check_server_ready "0.0.0.0" "6002"; then
-    echo "All agents started successfully."
+    echo "Server is up!"
 fi
 
 echo "Starting SMS (svr_sms_agent) agent (FastAPI/uvicorn) on port 6003..."
@@ -75,6 +75,22 @@ echo $! > sms_agent.pid
 if check_server_ready "0.0.0.0" "6003"; then
     echo "Server is up!"
 fi
+
+echo "Starting WEB AGENT (webagent_server) on port 8081..."
+cd webagent
+uvicorn webagent_server:app --host 0.0.0.0 --port 8081 > ../webagent.log 2>&1 &
+echo $! > ../webagent.pid
+cd ..
+
+# Web agent doesn't have a .well-known endpoint, so just check if it's listening
+sleep 2
+if curl -s "http://0.0.0.0:8081/" > /dev/null 2>&1; then
+    echo "Web agent is up and running on http://localhost:8081"
+else
+    echo "WARNING: Web agent may not have started properly"
+fi
+
+echo "All agents started successfully."
 
 # Now show the processes.
 show_agent_processes
